@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, X, FileText, ClipboardList, Send, Paperclip, Trash2, Copy } from 'lucide-react'
+import { ArrowLeft, Plus, X, FileText, ClipboardList, Send, Trash2, Copy, Paperclip, Download, ExternalLink } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import { supabase } from '../supabase'
 import { useAuth } from '../hooks/useAuth.jsx'
 
-const CATEGORIES = ['Trabajo en clase', 'Tarea', 'Evaluación', 'Material', 'Otro']
+const DEFAULT_CATEGORIES = ['Trabajo en clase', 'Tarea', 'Evaluación', 'Material', 'Otro']
 
 function formatDate(d) {
   if (!d) return ''
@@ -35,13 +35,20 @@ export default function ClassPage() {
   const [postText, setPostText] = useState('')
   const [postExpanded, setPostExpanded] = useState(false)
   const [posting, setPosting] = useState(false)
+  const [postFile, setPostFile] = useState(null)
+  const postFileRef = useRef()
 
   // Works
   const [works, setWorks] = useState([])
   const [showWorkModal, setShowWorkModal] = useState(false)
-  const [workForm, setWorkForm] = useState({ title: '', description: '', category: CATEGORIES[0], due_date: '' })
+  const [workForm, setWorkForm] = useState({ title: '', description: '', category: '', due_date: '' })
+  const [workFile, setWorkFile] = useState(null)
   const [savingWork, setSavingWork] = useState(false)
   const [selectedWork, setSelectedWork] = useState(null)
+  const workFileRef = useRef()
+
+  // Custom categories used in this class
+  const [usedCategories, setUsedCategories] = useState(DEFAULT_CATEGORIES)
 
   useEffect(() => { fetchAll() }, [id])
 
@@ -55,15 +62,45 @@ export default function ClassPage() {
     setCls(classData)
     setPosts(postsData || [])
     setWorks(worksData || [])
+
+    // Build category list from existing works
+    if (worksData?.length) {
+      const existing = [...new Set(worksData.map(w => w.category))]
+      const merged = [...new Set([...DEFAULT_CATEGORIES, ...existing])]
+      setUsedCategories(merged)
+    }
     setLoading(false)
+  }
+
+  async function uploadFile(file, folder) {
+    const ext = file.name.split('.').pop()
+    const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+    const { error } = await supabase.storage.from('attachments').upload(path, file)
+    if (error) throw error
+    const { data } = supabase.storage.from('attachments').getPublicUrl(path)
+    return { url: data.publicUrl, name: file.name }
   }
 
   async function publishPost(e) {
     e.preventDefault()
-    if (!postText.trim()) return
+    if (!postText.trim() && !postFile) return
     setPosting(true)
-    await supabase.from('posts').insert({ class_id: id, author_id: user.id, content: postText })
-    setPostText(''); setPostExpanded(false)
+    let attachment_url = null
+    let attachment_name = null
+    if (postFile) {
+      try {
+        const result = await uploadFile(postFile, 'posts')
+        attachment_url = result.url
+        attachment_name = result.name
+      } catch { /* ignore upload error, post anyway */ }
+    }
+    await supabase.from('posts').insert({
+      class_id: id, author_id: user.id,
+      content: postText,
+      attachment_url,
+      attachment_name,
+    })
+    setPostText(''); setPostExpanded(false); setPostFile(null)
     const { data } = await supabase.from('posts').select('*, profiles(full_name)').eq('class_id', id).order('created_at', { ascending: false })
     setPosts(data || [])
     setPosting(false)
@@ -77,9 +114,28 @@ export default function ClassPage() {
   async function createWork(e) {
     e.preventDefault()
     setSavingWork(true)
-    await supabase.from('works').insert({ ...workForm, class_id: id, teacher_id: user.id })
+    let attachment_url = null
+    let attachment_name = null
+    if (workFile) {
+      try {
+        const result = await uploadFile(workFile, 'works')
+        attachment_url = result.url
+        attachment_name = result.name
+      } catch { /* ignore */ }
+    }
+    const category = workForm.category || 'Sin categoría'
+    await supabase.from('works').insert({
+      ...workForm, category,
+      class_id: id, teacher_id: user.id,
+      attachment_url, attachment_name,
+    })
+    // Update category list
+    if (!usedCategories.includes(category)) {
+      setUsedCategories(prev => [...prev, category])
+    }
     setShowWorkModal(false)
-    setWorkForm({ title: '', description: '', category: CATEGORIES[0], due_date: '' })
+    setWorkForm({ title: '', description: '', category: '', due_date: '' })
+    setWorkFile(null)
     const { data } = await supabase.from('works').select('*').eq('class_id', id).order('created_at', { ascending: false })
     setWorks(data || [])
     setSavingWork(false)
@@ -92,23 +148,17 @@ export default function ClassPage() {
   }
 
   if (loading) return (
-    <div className="page">
-      <Navbar />
-      <div className="loading-center"><div className="spinner" /></div>
-    </div>
+    <div className="page"><Navbar /><div className="loading-center"><div className="spinner" /></div></div>
   )
 
   if (!cls) return (
-    <div className="page">
-      <Navbar />
-      <div className="empty-state"><p>Clase no encontrada.</p></div>
-    </div>
+    <div className="page"><Navbar /><div className="empty-state"><p>Clase no encontrada.</p></div></div>
   )
 
-  // Group works by category
-  const worksByCategory = CATEGORIES.reduce((acc, cat) => {
-    const items = works.filter(w => w.category === cat)
-    if (items.length) acc[cat] = items
+  // Group works by category preserving order
+  const categories = [...new Set(works.map(w => w.category))]
+  const worksByCategory = categories.reduce((acc, cat) => {
+    acc[cat] = works.filter(w => w.category === cat)
     return acc
   }, {})
 
@@ -139,7 +189,7 @@ export default function ClassPage() {
           )}
         </div>
 
-        {/* Wall */}
+        {/* WALL */}
         {tab === 'wall' && (
           <div className="class-layout">
             <aside className="class-sidebar">
@@ -148,24 +198,19 @@ export default function ClassPage() {
                   <div className="code-card-label">Código de clase</div>
                   <div className="code-card-value">{cls.code}</div>
                   <div className="code-card-hint">Compartí este código con tus alumnos para que se unan.</div>
-                  <button
-                    className="btn btn-outline btn-sm"
-                    style={{ marginTop: 12 }}
-                    onClick={() => navigator.clipboard.writeText(cls.code)}
-                  >
+                  <button className="btn btn-outline btn-sm" style={{ marginTop: 12 }} onClick={() => navigator.clipboard.writeText(cls.code)}>
                     <Copy size={13} /> Copiar código
                   </button>
                 </div>
               )}
               <div className="code-card">
-                <div className="code-card-label">Trabajos pendientes</div>
+                <div className="code-card-label">Trabajos publicados</div>
                 <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#202124' }}>{works.length}</div>
-                <div className="code-card-hint" style={{ marginTop: 4 }}>publicados en esta clase</div>
+                <div className="code-card-hint" style={{ marginTop: 4 }}>en esta clase</div>
               </div>
             </aside>
 
             <div className="wall">
-              {/* Composer — solo para el docente */}
               {isTeacher && (
                 <div className="post-composer">
                   {!postExpanded ? (
@@ -185,9 +230,24 @@ export default function ClassPage() {
                         placeholder="Escribí tu publicación…"
                         rows={3}
                       />
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
-                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setPostExpanded(false); setPostText('') }}>Cancelar</button>
-                        <button type="submit" className="btn btn-primary btn-sm" disabled={!postText.trim() || posting}>
+                      {/* File preview */}
+                      {postFile && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#e8f0fe', borderRadius: 4, fontSize: '.8rem' }}>
+                          <Paperclip size={13} color="#1a73e8" />
+                          <span style={{ flex: 1, color: '#1a73e8' }}>{postFile.name}</span>
+                          <button type="button" className="btn btn-ghost btn-icon" style={{ padding: 2 }} onClick={() => setPostFile(null)}>
+                            <X size={13} />
+                          </button>
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <button type="button" className="btn btn-ghost btn-icon btn-sm" title="Adjuntar archivo" onClick={() => postFileRef.current.click()}>
+                          <Paperclip size={16} />
+                        </button>
+                        <input ref={postFileRef} type="file" style={{ display: 'none' }} onChange={e => setPostFile(e.target.files[0])} />
+                        <div style={{ flex: 1 }} />
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setPostExpanded(false); setPostText(''); setPostFile(null) }}>Cancelar</button>
+                        <button type="submit" className="btn btn-primary btn-sm" disabled={(!postText.trim() && !postFile) || posting}>
                           <Send size={13} /> Publicar
                         </button>
                       </div>
@@ -196,12 +256,8 @@ export default function ClassPage() {
                 </div>
               )}
 
-              {/* Posts */}
               {posts.length === 0 && (
-                <div className="empty-state">
-                  <FileText size={48} />
-                  <p>No hay publicaciones aún.</p>
-                </div>
+                <div className="empty-state"><FileText size={48} /><p>No hay publicaciones aún.</p></div>
               )}
               {posts.map(post => (
                 <div key={post.id} className="post-card">
@@ -219,14 +275,21 @@ export default function ClassPage() {
                       </button>
                     )}
                   </div>
-                  <div className="post-content">{post.content}</div>
+                  {post.content && <div className="post-content">{post.content}</div>}
+                  {post.attachment_url && (
+                    <a href={post.attachment_url} target="_blank" rel="noreferrer" className="post-attachment">
+                      <Paperclip size={14} />
+                      {post.attachment_name || 'Archivo adjunto'}
+                      <ExternalLink size={12} style={{ marginLeft: 'auto' }} />
+                    </a>
+                  )}
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Works tab */}
+        {/* WORKS */}
         {tab === 'works' && (
           <div>
             {isTeacher && (
@@ -236,12 +299,8 @@ export default function ClassPage() {
                 </button>
               </div>
             )}
-
             {works.length === 0 ? (
-              <div className="empty-state">
-                <ClipboardList size={48} />
-                <p>No hay trabajos publicados aún.</p>
-              </div>
+              <div className="empty-state"><ClipboardList size={48} /><p>No hay trabajos publicados aún.</p></div>
             ) : (
               <div className="works-list">
                 {Object.entries(worksByCategory).map(([cat, items]) => (
@@ -254,11 +313,12 @@ export default function ClassPage() {
                         </div>
                         <div className="work-info">
                           <div className="work-title">{work.title}</div>
-                          <div className="work-meta">{work.category}</div>
+                          <div className="work-meta">
+                            {work.category}
+                            {work.attachment_url && <span style={{ marginLeft: 8 }}><Paperclip size={11} style={{ verticalAlign: 'middle' }} /> adjunto</span>}
+                          </div>
                         </div>
-                        {work.due_date && (
-                          <div className="work-due">Vence: {formatDate(work.due_date)}</div>
-                        )}
+                        {work.due_date && <div className="work-due">Vence: {formatDate(work.due_date)}</div>}
                       </div>
                     ))}
                   </div>
@@ -268,10 +328,8 @@ export default function ClassPage() {
           </div>
         )}
 
-        {/* Students tab */}
-        {tab === 'students' && isTeacher && (
-          <StudentsTab classId={id} />
-        )}
+        {/* STUDENTS */}
+        {tab === 'students' && isTeacher && <StudentsTab classId={id} />}
       </div>
 
       {/* New work modal */}
@@ -286,7 +344,7 @@ export default function ClassPage() {
               <div className="modal-body">
                 <div className="form-group">
                   <label className="form-label">Título *</label>
-                  <input className="form-input" value={workForm.title} onChange={e => setWorkForm(f => ({ ...f, title: e.target.value }))} required placeholder="Ej: Ejercicios página 42" />
+                  <input className="form-input" value={workForm.title} onChange={e => setWorkForm(f => ({ ...f, title: e.target.value }))} required placeholder="Ej: Tp 3 - Funciones" />
                 </div>
                 <div className="form-group">
                   <label className="form-label">Descripción</label>
@@ -294,13 +352,40 @@ export default function ClassPage() {
                 </div>
                 <div className="form-group">
                   <label className="form-label">Categoría</label>
-                  <select className="form-input" value={workForm.category} onChange={e => setWorkForm(f => ({ ...f, category: e.target.value }))}>
-                    {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                  </select>
+                  <input
+                    className="form-input"
+                    list="cat-list"
+                    value={workForm.category}
+                    onChange={e => setWorkForm(f => ({ ...f, category: e.target.value }))}
+                    placeholder="Escribí o elegí una categoría…"
+                  />
+                  <datalist id="cat-list">
+                    {usedCategories.map(c => <option key={c} value={c} />)}
+                  </datalist>
+                  <div style={{ fontSize: '.75rem', color: '#5f6368', marginTop: 4 }}>
+                    Podés escribir una categoría nueva o elegir una existente.
+                  </div>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Fecha de entrega</label>
                   <input className="form-input" type="date" value={workForm.due_date} onChange={e => setWorkForm(f => ({ ...f, due_date: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Archivo adjunto</label>
+                  {workFile ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#e8f0fe', borderRadius: 4, fontSize: '.875rem' }}>
+                      <Paperclip size={14} color="#1a73e8" />
+                      <span style={{ flex: 1, color: '#1a73e8' }}>{workFile.name}</span>
+                      <button type="button" className="btn btn-ghost btn-icon" style={{ padding: 2 }} onClick={() => setWorkFile(null)}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" className="btn btn-outline btn-sm" onClick={() => workFileRef.current.click()}>
+                      <Paperclip size={14} /> Adjuntar archivo
+                    </button>
+                  )}
+                  <input ref={workFileRef} type="file" style={{ display: 'none' }} onChange={e => setWorkFile(e.target.files[0])} />
                 </div>
               </div>
               <div className="modal-footer">
@@ -342,6 +427,13 @@ export default function ClassPage() {
               {selectedWork.description && (
                 <div className="work-detail-desc">{selectedWork.description}</div>
               )}
+              {selectedWork.attachment_url && (
+                <a href={selectedWork.attachment_url} target="_blank" rel="noreferrer" className="post-attachment" style={{ marginTop: 8 }}>
+                  <Paperclip size={14} />
+                  {selectedWork.attachment_name || 'Archivo adjunto'}
+                  <ExternalLink size={13} style={{ marginLeft: 'auto' }} />
+                </a>
+              )}
             </div>
             <div className="modal-footer">
               {isTeacher && (
@@ -367,10 +459,7 @@ function StudentsTab({ classId }) {
       .from('enrollments')
       .select('*, profiles(full_name, id)')
       .eq('class_id', classId)
-      .then(({ data }) => {
-        setStudents(data || [])
-        setLoading(false)
-      })
+      .then(({ data }) => { setStudents(data || []); setLoading(false) })
   }, [classId])
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
@@ -381,9 +470,7 @@ function StudentsTab({ classId }) {
         {students.length} alumno{students.length !== 1 ? 's' : ''} inscripto{students.length !== 1 ? 's' : ''}
       </div>
       {students.length === 0 ? (
-        <div className="empty-state">
-          <p>Todavía no hay alumnos inscriptos.</p>
-        </div>
+        <div className="empty-state"><p>Todavía no hay alumnos inscriptos.</p></div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {students.map(e => (
