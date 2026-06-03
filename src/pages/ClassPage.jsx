@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, X, FileText, ClipboardList, Send, Trash2, Copy, Paperclip, Download, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Plus, X, FileText, ClipboardList, Send, Trash2, Copy, Paperclip, ExternalLink, Pencil } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import { supabase } from '../supabase'
 import { useAuth } from '../hooks/useAuth.jsx'
@@ -171,13 +171,19 @@ export default function ClassPage() {
       <Navbar />
 
       {/* Banner */}
-      <div className="class-banner" style={{ background: `linear-gradient(135deg, ${cls.color}, ${cls.color}99)` }}>
-        <div style={{ position: 'absolute', top: 16, left: 16 }}>
+      <div className="class-banner" style={{
+        background: cls.banner_url
+          ? `url(${cls.banner_url}) center/cover no-repeat`
+          : `linear-gradient(135deg, ${cls.color}, ${cls.color}99)`,
+        position: 'relative'
+      }}>
+        {cls.banner_url && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.4)' }} />}
+        <div style={{ position: 'absolute', top: 16, left: 16, zIndex: 1 }}>
           <button className="btn btn-ghost btn-icon" style={{ color: 'white' }} onClick={() => navigate('/')}>
             <ArrowLeft size={20} />
           </button>
         </div>
-        <div className="class-banner-info">
+        <div className="class-banner-info" style={{ position: 'relative', zIndex: 1 }}>
           <div className="class-banner-name">{cls.name}</div>
           {cls.section && <div className="class-banner-section">{cls.section}</div>}
         </div>
@@ -457,14 +463,37 @@ export default function ClassPage() {
 function StudentsTab({ classId }) {
   const [students, setStudents] = useState([])
   const [loading, setLoading] = useState(true)
+  const [editingStudent, setEditingStudent] = useState(null)
+  const [editName, setEditName] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [removingId, setRemovingId] = useState(null)
 
-  useEffect(() => {
-    supabase
-      .from('enrollments')
-      .select('*, profiles(full_name, id)')
+  useEffect(() => { fetchStudents() }, [classId])
+
+  async function fetchStudents() {
+    const { data } = await supabase
+      .from('enrollments').select('*, profiles(full_name, id)')
       .eq('class_id', classId)
-      .then(({ data }) => { setStudents(data || []); setLoading(false) })
-  }, [classId])
+    setStudents(data || [])
+    setLoading(false)
+  }
+
+  async function saveEditName(e) {
+    e.preventDefault()
+    if (!editName.trim()) return
+    setSavingEdit(true)
+    await supabase.from('profiles').update({ full_name: editName.trim() }).eq('id', editingStudent.profiles.id)
+    setEditingStudent(null)
+    fetchStudents()
+    setSavingEdit(false)
+  }
+
+  async function removeStudent(enrollment) {
+    setRemovingId(enrollment.id)
+    await supabase.from('enrollments').delete().eq('id', enrollment.id)
+    setStudents(s => s.filter(x => x.id !== enrollment.id))
+    setRemovingId(null)
+  }
 
   if (loading) return <div className="loading-center"><div className="spinner" /></div>
 
@@ -482,9 +511,45 @@ function StudentsTab({ classId }) {
               <div className="avatar" style={{ fontSize: '.8rem' }}>
                 {e.profiles?.full_name?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)}
               </div>
-              <span style={{ fontWeight: 500 }}>{e.profiles?.full_name}</span>
+              <span style={{ fontWeight: 500, flex: 1 }}>{e.profiles?.full_name}</span>
+              <button className="btn btn-ghost btn-icon btn-sm" title="Editar nombre"
+                onClick={() => { setEditingStudent(e); setEditName(e.profiles?.full_name || '') }}>
+                <Pencil size={14} />
+              </button>
+              <button className="btn btn-ghost btn-icon btn-sm" title="Quitar de la clase"
+                style={{ color: '#d93025' }}
+                disabled={removingId === e.id}
+                onClick={() => removeStudent(e)}>
+                <Trash2 size={14} />
+              </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Modal editar nombre */}
+      {editingStudent && (
+        <div className="modal-overlay" onClick={() => setEditingStudent(null)}>
+          <div className="modal" onClick={ev => ev.stopPropagation()} style={{ maxWidth: 400 }}>
+            <div className="modal-header">
+              <span className="modal-title">Editar nombre</span>
+              <button className="btn btn-ghost btn-icon" onClick={() => setEditingStudent(null)}><X size={18} /></button>
+            </div>
+            <form onSubmit={saveEditName}>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label className="form-label">Nombre completo</label>
+                  <input className="form-input" value={editName} onChange={e => setEditName(e.target.value)} required autoFocus />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-ghost" onClick={() => setEditingStudent(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={savingEdit}>
+                  {savingEdit ? 'Guardando...' : 'Guardar'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>
