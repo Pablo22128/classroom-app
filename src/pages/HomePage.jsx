@@ -16,7 +16,7 @@ const generateCode = () => {
 }
 
 export default function HomePage() {
-  const { isTeacher, user } = useAuth()
+  const { isTeacher, user, profile } = useAuth()
   const navigate = useNavigate()
   const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(true)
@@ -25,7 +25,7 @@ export default function HomePage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => { fetchClasses() }, [])
+  useEffect(() => { if (user && profile !== undefined) fetchClasses() }, [user?.id, isTeacher])
 
   async function fetchClasses() {
     setLoading(true)

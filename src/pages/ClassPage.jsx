@@ -125,9 +125,13 @@ export default function ClassPage() {
     }
     const category = workForm.category || 'Sin categoría'
     await supabase.from('works').insert({
-      ...workForm, category,
-      class_id: id, teacher_id: user.id,
-      attachment_url, attachment_name,
+      ...workForm,
+      category,
+      due_date: workForm.due_date || null,
+      class_id: id,
+      teacher_id: user.id,
+      attachment_url,
+      attachment_name,
     })
     // Update category list
     if (!usedCategories.includes(category)) {
