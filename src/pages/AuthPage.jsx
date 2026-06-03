@@ -71,7 +71,14 @@ export default function AuthPage() {
     })
 
     if (signUpError) {
-      setError('No se pudo crear la cuenta. Intentá de nuevo.')
+      setError(`Error: ${signUpError.message}`)
+      setLoading(false)
+      return
+    }
+
+    // Si no hay usuario es porque requiere confirmación de email
+    if (!data?.user) {
+      setError('Confirmación de email requerida. Pedile al docente que desactive esa opción en Supabase.')
       setLoading(false)
       return
     }
