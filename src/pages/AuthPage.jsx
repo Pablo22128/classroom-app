@@ -2,26 +2,14 @@ import { useState } from 'react'
 import { supabase } from '../supabase'
 import { BookOpen } from 'lucide-react'
 
-// Genera email y password fijos a partir del nombre + código
-// Así el alumno siempre puede volver a entrar con los mismos datos
-function buildCredentials(name, code) {
-  const normalized = name.trim().toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '') // quita tildes
-    .replace(/\s+/g, '.') // espacios → puntos
-    .replace(/[^a-z0-9.]/g, '') // solo letras, números y puntos
-  const email = `${normalized}.${code.toLowerCase()}@miclase.app`
-  const password = `mc-${code.toLowerCase()}-${normalized}`
-  return { email, password }
-}
-
 export default function AuthPage() {
-  const [tab, setTab] = useState('login')
+  const [tab, setTab] = useState('student')
 
   // Login docente
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
-  // Registro/acceso alumno
+  // Acceso alumno
   const [name, setName] = useState('')
   const [classCode, setClassCode] = useState('')
 
@@ -40,61 +28,46 @@ export default function AuthPage() {
     e.preventDefault()
     setLoading(true); setError('')
 
-    if (!name.trim()) { setError('Ingresá tu nombre completo.'); setLoading(false); return }
-    if (!classCode.trim()) { setError('Ingresá el código de clase.'); setLoading(false); return }
+    const trimmedName = name.trim()
+    const code = classCode.trim().toUpperCase()
 
-    const code = classCode.toUpperCase()
+    if (!trimmedName) { setError('Ingresá tu nombre completo.'); setLoading(false); return }
+    if (!code) { setError('Ingresá el código de clase.'); setLoading(false); return }
 
     // Validar código de clase
     const { data: classData } = await supabase
-      .from('classes').select('id')
-      .eq('code', code).single()
-
+      .from('classes').select('id').eq('code', code).single()
     if (!classData) { setError('Código de clase inválido. Verificá con tu docente.'); setLoading(false); return }
 
-    const { email: autoEmail, password: autoPassword } = buildCredentials(name, code)
+    // Verificar si ya existe un alumno con ese nombre en esa clase
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('id, enrollments!inner(class_id)')
+      .eq('full_name', trimmedName)
+      .eq('role', 'student')
+      .eq('enrollments.class_id', classData.id)
+      .maybeSingle()
 
-    // Intentar login primero (por si ya existe)
-    const { error: loginError } = await supabase.auth.signInWithPassword({
-      email: autoEmail, password: autoPassword
-    })
+    if (existing) {
+      // Ya existe — crear sesión anónima nueva y reasociar
+      const { data: anonData, error: anonErr } = await supabase.auth.signInAnonymously()
+      if (anonErr) { setError('No se pudo iniciar sesión. Intentá de nuevo.'); setLoading(false); return }
 
-    if (!loginError) {
-      // Ya existía → entró directo
+      // Actualizar perfil al nuevo uid anónimo
+      await supabase.from('profiles').delete().eq('id', existing.id)
+      await supabase.from('profiles').insert({ id: anonData.user.id, full_name: trimmedName, role: 'student' })
+      await supabase.from('enrollments').insert({ student_id: anonData.user.id, class_id: classData.id })
       setLoading(false)
       return
     }
 
-    // No existía → registrar
-    const { data, error: signUpError } = await supabase.auth.signUp({
-      email: autoEmail, password: autoPassword
-    })
+    // Alumno nuevo — inicio anónimo
+    const { data: anonData, error: anonErr } = await supabase.auth.signInAnonymously()
+    if (anonErr) { setError('No se pudo iniciar sesión. Intentá de nuevo.'); setLoading(false); return }
 
-    if (signUpError) {
-      setError(`Error: ${signUpError.message}`)
-      setLoading(false)
-      return
-    }
-
-    // Si no hay usuario es porque requiere confirmación de email
-    if (!data?.user) {
-      setError('Confirmación de email requerida. Pedile al docente que desactive esa opción en Supabase.')
-      setLoading(false)
-      return
-    }
-
-    // Crear perfil
-    await supabase.from('profiles').insert({
-      id: data.user.id,
-      full_name: name.trim(),
-      role: 'student',
-    })
-
-    // Inscribir en la clase
-    await supabase.from('enrollments').insert({
-      student_id: data.user.id,
-      class_id: classData.id,
-    })
+    // Crear perfil e inscribir
+    await supabase.from('profiles').insert({ id: anonData.user.id, full_name: trimmedName, role: 'student' })
+    await supabase.from('enrollments').insert({ student_id: anonData.user.id, class_id: classData.id })
 
     setLoading(false)
   }
@@ -109,17 +82,39 @@ export default function AuthPage() {
         <p className="auth-subtitle">Plataforma educativa</p>
 
         <div className="auth-tabs">
-          <button className={`auth-tab ${tab === 'login' ? 'active' : ''}`} onClick={() => { setTab('login'); setError('') }}>
-            Soy docente
-          </button>
           <button className={`auth-tab ${tab === 'student' ? 'active' : ''}`} onClick={() => { setTab('student'); setError('') }}>
             Soy alumno
+          </button>
+          <button className={`auth-tab ${tab === 'login' ? 'active' : ''}`} onClick={() => { setTab('login'); setError('') }}>
+            Soy docente
           </button>
         </div>
 
         {error && <div className="alert alert-error">{error}</div>}
 
-        {tab === 'login' ? (
+        {tab === 'student' ? (
+          <form onSubmit={handleStudentJoin}>
+            <p style={{ fontSize: '.85rem', color: '#5f6368', marginBottom: 16, lineHeight: 1.5 }}>
+              Ingresá tu nombre y el código que te dio tu docente.
+            </p>
+            <div className="form-group">
+              <label className="form-label">Nombre y apellido</label>
+              <input className="form-input" type="text" value={name}
+                onChange={e => setName(e.target.value)} required placeholder="Ej: Juan Pérez" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Código de clase</label>
+              <input className="form-input" type="text" value={classCode}
+                onChange={e => setClassCode(e.target.value.toUpperCase())}
+                required placeholder="Ej: C6Z0W3"
+                style={{ letterSpacing: 3, fontWeight: 600, fontSize: '1.1rem' }}
+                maxLength={6} />
+            </div>
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: 4 }} disabled={loading}>
+              {loading ? 'Entrando...' : 'Entrar a la clase'}
+            </button>
+          </form>
+        ) : (
           <form onSubmit={handleLogin}>
             <div className="form-group">
               <label className="form-label">Email</label>
@@ -133,39 +128,6 @@ export default function AuthPage() {
             </div>
             <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: 4 }} disabled={loading}>
               {loading ? 'Ingresando...' : 'Ingresar'}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleStudentJoin}>
-            <p style={{ fontSize: '.85rem', color: '#5f6368', marginBottom: 16, lineHeight: 1.5 }}>
-              Ingresá tu nombre y el código que te dio tu docente. La próxima vez usá los mismos datos para volver a entrar.
-            </p>
-            <div className="form-group">
-              <label className="form-label">Nombre y apellido</label>
-              <input
-                className="form-input"
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                required
-                placeholder="Ej: Juan Pérez"
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Código de clase</label>
-              <input
-                className="form-input"
-                type="text"
-                value={classCode}
-                onChange={e => setClassCode(e.target.value.toUpperCase())}
-                required
-                placeholder="Ej: X6XBJ1"
-                style={{ letterSpacing: 3, fontWeight: 600, fontSize: '1.1rem' }}
-                maxLength={6}
-              />
-            </div>
-            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: 4 }} disabled={loading}>
-              {loading ? 'Entrando...' : 'Entrar a la clase'}
             </button>
           </form>
         )}
